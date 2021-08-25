@@ -1,0 +1,24 @@
+{
+  "name": "apollo-server-h3",
+  "version": "0.1.0",
+  "author": "Pascal Martineau <pascal@lewebsimple.ca>",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "apollo-server-core": "^3.2.0",
+    "graphql": "^15.5.1",
+    "h3": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.7.1",
+    "typescript": "^4.3.5"
+  },
+  "peerDependencies": {
+    "graphql": "^15.5.1",
+    "h3": "^0.3.0"
+  }
+}
