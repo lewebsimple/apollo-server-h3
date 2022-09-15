@@ -1,27 +1,130 @@
-import { createError, useBody, useQuery } from "h3";
-import { IncomingMessage, ServerResponse } from "http";
-import { ApolloServerBase, GraphQLOptions, convertNodeHttpToRequest, runHttpQuery } from "apollo-server-core";
+import type { GraphQLOptions } from "apollo-server-core";
+import {
+  ApolloServerBase,
+  convertNodeHttpToRequest,
+  isHttpQueryError,
+  runHttpQuery,
+} from "apollo-server-core";
+import type { LandingPage } from "apollo-server-plugin-base";
+import {
+  CompatibilityEvent,
+  EventHandler,
+  getQuery,
+  readBody,
+  setResponseHeader,
+  setResponseHeaders,
+} from "h3";
+
+// Manually specify CORS options as long as h3 doesn't support this natively
+// https://github.com/unjs/h3/issues/82
+interface RouteOptionsCors {
+  origin?: string;
+  credentials?: boolean;
+  methods?: string;
+}
+
+export interface ServerRegistration {
+  path?: string;
+  disableHealthCheck?: boolean;
+  onHealthCheck?: (event: CompatibilityEvent) => Promise<any>;
+  cors?: boolean | RouteOptionsCors;
+}
 
 export class ApolloServer extends ApolloServerBase {
-  async createGraphQLServerOptions(request?: IncomingMessage, reply?: ServerResponse): Promise<GraphQLOptions> {
-    return this.graphQLServerOptions({ request, reply });
+  async createGraphQLServerOptions(
+    event: CompatibilityEvent
+  ): Promise<GraphQLOptions> {
+    return this.graphQLServerOptions(event);
   }
-  async handle(req: IncomingMessage, res: ServerResponse) {
-    const { graphqlResponse, responseInit } = await runHttpQuery([], {
-      method: req.method || 'GET',
-      options: () => this.createGraphQLServerOptions(req, res),
-      query: req.method === "POST" ? await useBody(req) : await useQuery(req),
-      request: convertNodeHttpToRequest(req),
-    });
-    if (responseInit.headers) {
-      for (const [name, value] of Object.entries<string>(responseInit.headers)) {
-        res.setHeader(name, value);
+
+  createHandler({
+    path,
+    disableHealthCheck,
+    onHealthCheck,
+    cors,
+  }: ServerRegistration = {}): EventHandler {
+    this.graphqlPath = path || "/graphql";
+    // Provide false to remove CORS middleware entirely, or true to use your middleware's default configuration.
+    const corsOptions =
+      cors === true || cors === undefined ? { origin: "ignore" } : cors;
+    const landingPage = this.getLandingPage();
+
+    return async (event: CompatibilityEvent) => {
+      const options = await this.createGraphQLServerOptions(event);
+      try {
+        if (landingPage) {
+          const landingPageHtml = this.handleLandingPage(event, landingPage);
+          if (landingPageHtml) {
+            return landingPageHtml;
+          }
+        }
+
+        const { graphqlResponse, responseInit } = await runHttpQuery([], {
+          method: event.req.method || "GET",
+          options,
+          query:
+            event.req.method === "POST"
+              ? await readBody(event)
+              : getQuery(event),
+          request: convertNodeHttpToRequest(event.req),
+        });
+        setHeaders(event, responseInit.headers, corsOptions);
+        event.res.statusCode = responseInit.status || 200;
+        return graphqlResponse;
+      } catch (error: any) {
+        if (!isHttpQueryError(error)) {
+          throw error;
+        }
+        setHeaders(event, error.headers, corsOptions);
+        event.res.statusCode = error.statusCode || 500;
+        return error.message;
+      }
+    };
+  }
+
+  private handleLandingPage(
+    event: CompatibilityEvent,
+    landingPage: LandingPage
+  ): string | undefined {
+    const url = event.req.url?.split("?")[0];
+    if (event.req.method === "GET" && url === this.graphqlPath) {
+      const prefersHtml = event.req.headers.accept?.includes("text/html");
+
+      if (prefersHtml) {
+        return landingPage.html;
       }
     }
-    if (responseInit.status || 200 !== 200) {
-      throw createError({ statusCode: responseInit.status });
-    }
+  }
+}
 
-    return graphqlResponse;
+function setHeaders(
+  event: CompatibilityEvent,
+  headers: Record<string, string> | undefined,
+  corsOptions: false | RouteOptionsCors
+) {
+  if (headers) {
+    setResponseHeaders(event, headers);
+  }
+  if (corsOptions !== false) {
+    setResponseHeader(
+      event,
+      "Access-Control-Allow-Origin",
+      corsOptions.origin ?? "ignore"
+    );
+
+    if (corsOptions.credentials !== undefined) {
+      setResponseHeader(
+        event,
+        "Access-Control-Allow-Credentials",
+        corsOptions.credentials.toString()
+      );
+    }
+    if (corsOptions.methods !== undefined) {
+      setResponseHeader(
+        event,
+        "Access-Control-Allow-Methods",
+        corsOptions.methods
+      );
+    }
   }
 }
